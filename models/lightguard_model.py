@@ -139,9 +139,8 @@ class LightGuard(nn.Module):
         y = self.f1(x)
         return y
 
-
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = LightGuard().to(device)
-    print(summary(model, (1, 56, 56)))
-    # print(model)
+    # 将测试输入尺寸改为 (1, 28, 28) 以匹配 784 字节的截断长度
+    print(summary(model, (1, 28, 28)))

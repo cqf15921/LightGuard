@@ -9,7 +9,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 # ==========================================
-# 1. USTC-TFC2016 原始 PCAP 预处理类 (保持原样)
+# 1. USTC-TFC2016 原始 PCAP 预处理类
 # ==========================================
 class LightGuardPreprocessor:
     def __init__(self, input_dir, output_idx_path, img_size=28, truncate_len=784):
@@ -85,7 +85,6 @@ class LightGuardPreprocessor:
         train_path = self.output_idx_path.replace('.npz', '_train.npz')
         test_path = self.output_idx_path.replace('.npz', '_test.npz')
 
-        # 注意：这里严格使用 images 和 labels 键名，与 dataset.py 保持一致
         np.savez_compressed(train_path, images=X_train, labels=y_train)
         np.savez_compressed(test_path, images=X_test, labels=y_test)
 
@@ -98,7 +97,6 @@ class LightGuardPreprocessor:
 # ==========================================
 def tabular_to_image(X_raw, img_size=28, truncate_len=784):
     """将一维CSV统计特征归一化，并填充/截断为28x28图像结构，以适配LightGuard CNN"""
-    # 归一化到 0~1 之间，再映射到 0~255 (类似像素值)
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X_raw)
     X_scaled = (X_scaled * 255).astype(np.uint8)
@@ -106,14 +104,12 @@ def tabular_to_image(X_raw, img_size=28, truncate_len=784):
     num_samples = X_scaled.shape[0]
     num_features = X_scaled.shape[1]
 
-    # 填充(Padding) 或 截断(Truncation) 至 784 维
     if num_features > truncate_len:
         X_padded = X_scaled[:, :truncate_len]
     else:
         padding = np.zeros((num_samples, truncate_len - num_features), dtype=np.uint8)
         X_padded = np.hstack((X_scaled, padding))
 
-    # 转换为 2D 图像格式 (N, 28, 28)
     images = X_padded.reshape(-1, img_size, img_size)
     return images
 
@@ -133,7 +129,6 @@ def process_cic_iot_csv(raw_dir, output_dir):
         print(f"    读取: {os.path.basename(file)}")
         try:
             df = pd.read_csv(file)
-            # 简化：如果 CSV 实在太大，可以采样 df = df.sample(frac=0.1)
             df_list.append(df)
         except Exception as e:
             print(f"    [!] 读取 {file} 失败: {e}")
@@ -145,17 +140,22 @@ def process_cic_iot_csv(raw_dir, output_dir):
     full_df.replace([np.inf, -np.inf], np.nan, inplace=True)
     full_df.dropna(inplace=True)
 
-    # 提取标签列 (假定列名为 'label'，如果没有则取最后一列)
     label_col = 'label' if 'label' in full_df.columns else full_df.columns[-1]
-    labels = full_df[label_col].astype(str).values  # dataset.py 需要字符串形式的标签
 
-    # 提取纯数值特征
+    # 【修复核心】：过滤掉样本数少于2的极端稀有类别
+    class_counts = full_df[label_col].value_counts()
+    valid_classes = class_counts[class_counts >= 2].index
+    dropped_classes = class_counts[class_counts < 2].index
+    if len(dropped_classes) > 0:
+        print(f"    [!] 为保证分层抽样，自动过滤样本数<2的稀有类别: {list(dropped_classes)}")
+    full_df = full_df[full_df[label_col].isin(valid_classes)]
+
+    labels = full_df[label_col].astype(str).values
     X_raw = full_df.drop(columns=[label_col]).select_dtypes(include=[np.number]).values
 
-    # 转换为 28x28 图像格式
     images = tabular_to_image(X_raw)
 
-    print("正在按 8:2 划分 CIC_IoT_2023 数据集...")
+    print(f"正在按 8:2 划分 CIC_IoT_2023 数据集 (共 {len(labels)} 条有效样本)...")
     X_train, X_test, y_train, y_test = train_test_split(images, labels, test_size=0.2, random_state=42, stratify=labels)
 
     train_path = os.path.join(output_dir, 'cic_iot_2023_dataset_train.npz')
@@ -180,17 +180,22 @@ def process_ton_iot_csv(raw_dir, output_dir):
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.dropna(inplace=True)
 
-    # 确定标签列 (ToN-IoT 通常有 'type' 列记录具体的攻击类别)
     label_col = 'type' if 'type' in df.columns else df.columns[-1]
-    labels = df[label_col].astype(str).values
 
+    # 【修复核心】：同样过滤 ToN-IoT 中可能存在的极端稀有类别
+    class_counts = df[label_col].value_counts()
+    valid_classes = class_counts[class_counts >= 2].index
+    dropped_classes = class_counts[class_counts < 2].index
+    if len(dropped_classes) > 0:
+        print(f"    [!] 为保证分层抽样，自动过滤样本数<2的稀有类别: {list(dropped_classes)}")
+    df = df[df[label_col].isin(valid_classes)]
+
+    labels = df[label_col].astype(str).values
     X_raw = df.drop(columns=[label_col]).select_dtypes(include=[np.number]).values
 
-    # 转换为 28x28 图像格式
     images = tabular_to_image(X_raw)
 
-    print("正在按 8:2 划分 ToN-IoT 数据集...")
-    # 【核心修复】：已将原有的 train_test_split(images, images, ...) 修正为 images, labels
+    print(f"正在按 8:2 划分 ToN-IoT 数据集 (共 {len(labels)} 条有效样本)...")
     X_train, X_test, y_train, y_test = train_test_split(images, labels, test_size=0.2, random_state=42, stratify=labels)
 
     train_path = os.path.join(output_dir, 'ton_iot_dataset_train.npz')
@@ -201,7 +206,7 @@ def process_ton_iot_csv(raw_dir, output_dir):
 
 
 # ==========================================
-# 主入口模块 (参数化配置)
+# 主入口模块
 # ==========================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LightGuard Data Preprocessing")

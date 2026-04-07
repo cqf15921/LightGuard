@@ -2,7 +2,9 @@ import os
 import glob
 import argparse
 import numpy as np
-from scapy.all import rdpcap, IP
+from collections import defaultdict
+from scapy.all import IP, TCP, UDP
+from scapy.utils import PcapReader
 from sklearn.model_selection import train_test_split
 
 
@@ -16,7 +18,8 @@ class NetVisionPreprocessor:
         os.makedirs(os.path.dirname(self.output_idx_path), exist_ok=True)
 
     def traffic_cleaning(self, packet):
-        if IP in packet:
+        # 使用 haslayer 替代直接导入，完美解决 IDE 找不到引用的警告问题
+        if packet.haslayer(IP):
             return bytes(packet[IP])
         return None
 
@@ -53,23 +56,60 @@ class NetVisionPreprocessor:
                 # USTC 和 ToN-IoT：使用去掉后缀的文件名作为标签
                 label_name = os.path.splitext(base_name)[0]
 
-            print(f"正在处理: {base_name} (分配标签: {label_name})")
+            print(f"\n正在处理: {base_name} (分配标签: {label_name})")
+
+            # === 核心优化 1：内存优化的流式读取引擎 ===
+            sessions = defaultdict(bytes)
+
+            # === 核心优化 2：数据重采样与防过拟合截断 ===
+            max_packets_per_file = 300000  # 每个文件最多只读取前 30 万个数据包 (可根据需要修改)
 
             try:
-                # Scapy rdpcap 可以同时读取 .pcap 和 .pcapng 文件
-                packets = rdpcap(file_path)
-                sessions = packets.sessions()
+                # PcapReader 像流水线一样逐个吐出数据包，几乎不占用任何运行内存 (RAM)
+                with PcapReader(file_path) as pcap_reader:
+                    for i, pkt in enumerate(pcap_reader):
 
-                for session_name, session_pkts in sessions.items():
-                    session_bytes = b''
-                    for pkt in session_pkts:
+                        # 【提速与防过拟合秘籍】达到上限直接切断循环，防止读取无效的泛洪攻击数据包
+                        if i >= max_packets_per_file:
+                            print(f"    [!] 达到采样上限 ({max_packets_per_file}包)，触发防过拟合截断，停止读取。")
+                            break
+
+                        # 每读取 1 万个包打印一次进度，防止在 Colab 上误以为程序死机
+                        if i > 0 and i % 10000 == 0:
+                            print(f"    ... 已读取 {i} 个数据包 ...")
+
                         cleaned_data = self.traffic_cleaning(pkt)
-                        if cleaned_data:
-                            session_bytes += cleaned_data
+                        if not cleaned_data:
+                            continue
 
+                        # 提取五元组作为会话的唯一 Key
+                        if pkt.haslayer(IP):
+                            src = pkt[IP].src
+                            dst = pkt[IP].dst
+                            proto = pkt[IP].proto
+                            sport, dport = 0, 0
+
+                            if pkt.haslayer(TCP):
+                                sport = pkt[TCP].sport
+                                dport = pkt[TCP].dport
+                            elif pkt.haslayer(UDP):
+                                sport = pkt[UDP].sport
+                                dport = pkt[UDP].dport
+
+                            # 排序源和目的端口，保证一来一回的双向流量被划分为同一个 Session
+                            end1 = f"{src}:{sport}"
+                            end2 = f"{dst}:{dport}"
+                            session_key = f"{proto}-" + "-".join(sorted([end1, end2]))
+
+                            # 【极速截断优化】如果该会话已经收集满 784 字节，就不再浪费内存继续拼接了！
+                            if len(sessions[session_key]) < self.truncate_len:
+                                sessions[session_key] += cleaned_data
+
+                # 将收集好的所有会话转换为二维灰度图像
+                print(f"    [+] {base_name} 读取完毕！共提取 {len(sessions)} 个有效会话，正在转换为图像矩阵...")
+                for sess_key, session_bytes in sessions.items():
                     if len(session_bytes) == 0:
                         continue
-
                     truncated_data = self.traffic_truncation(session_bytes)
                     img_array = np.frombuffer(truncated_data, dtype=np.uint8).reshape(self.img_size, self.img_size)
 
@@ -115,7 +155,7 @@ class NetVisionPreprocessor:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LightGuard PCAP Preprocessing")
+    parser = argparse.ArgumentParser(description="NetVision PCAP Preprocessing (Streaming & Optimized)")
     parser.add_argument('--dataset', type=str, default='USTC_TFC2016',
                         choices=['USTC_TFC2016', 'ENTA_Datase', 'ToN-IoT', 'all'],
                         help='选择要处理的数据集名称')

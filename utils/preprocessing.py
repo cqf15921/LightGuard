@@ -67,7 +67,17 @@ class NetVisionPreprocessor:
             try:
                 # PcapReader 像流水线一样逐个吐出数据包，几乎不占用任何运行内存 (RAM)
                 with PcapReader(file_path) as pcap_reader:
-                    for i, pkt in enumerate(pcap_reader):
+                    i = 0
+                    while True:
+                        # === 核心优化 3：异常与畸形包跳过机制 (抗损毁) ===
+                        try:
+                            # 手动逐个读取，遇到畸形包时只报错当前包，不崩溃整个程序
+                            pkt = pcap_reader.read_packet()
+                        except EOFError:
+                            break  # 正常读取到文件末尾，结束循环
+                        except Exception:
+                            # 遇到畸形/损坏的 pcapng 数据包，直接跳过！
+                            continue
 
                         # 【提速与防过拟合秘籍】达到上限直接切断循环，防止读取无效的泛洪攻击数据包
                         if i >= max_packets_per_file:
@@ -80,6 +90,7 @@ class NetVisionPreprocessor:
 
                         cleaned_data = self.traffic_cleaning(pkt)
                         if not cleaned_data:
+                            i += 1  # 即使是空包也要增加计数，防止死循环
                             continue
 
                         # 提取五元组作为会话的唯一 Key
@@ -104,6 +115,8 @@ class NetVisionPreprocessor:
                             # 【极速截断优化】如果该会话已经收集满 784 字节，就不再浪费内存继续拼接了！
                             if len(sessions[session_key]) < self.truncate_len:
                                 sessions[session_key] += cleaned_data
+
+                        i += 1  # 成功处理完一个包，计数器加 1
 
                 # 将收集好的所有会话转换为二维灰度图像
                 print(f"    [+] {base_name} 读取完毕！共提取 {len(sessions)} 个有效会话，正在转换为图像矩阵...")

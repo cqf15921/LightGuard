@@ -20,7 +20,7 @@ def main():
 
     # 核心参数：选择数据集 (已更新为完全对齐论文的 PCAP 数据集)
     parser.add_argument('--dataset', type=str, default='USTC_TFC2016',
-                        choices=['USTC_TFC2016', 'ENTA_Datase', 'ToN-IoT'],
+                        choices=['USTC_TFC2016', 'CIC_IoT_2023', 'ToN-IoT'],
                         help='选择要训练的数据集')
 
     # 超参数配置

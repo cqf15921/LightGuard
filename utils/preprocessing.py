@@ -3,7 +3,8 @@ import glob
 import argparse
 import numpy as np
 from collections import defaultdict
-from scapy.all import IP, TCP, UDP
+# 加入了 IPv6 支持，防止 IoT 数据集中的正常设备流量被漏掉
+from scapy.all import IP, IPv6, TCP, UDP
 from scapy.utils import PcapReader
 from sklearn.model_selection import train_test_split
 
@@ -18,9 +19,11 @@ class NetVisionPreprocessor:
         os.makedirs(os.path.dirname(self.output_idx_path), exist_ok=True)
 
     def traffic_cleaning(self, packet):
-        # 使用 haslayer 替代直接导入，完美解决 IDE 找不到引用的警告问题
+        # 同时支持 IPv4 和 IPv6 层的提取
         if packet.haslayer(IP):
             return bytes(packet[IP])
+        elif packet.haslayer(IPv6):
+            return bytes(packet[IPv6])
         return None
 
     def traffic_truncation(self, raw_bytes):
@@ -46,15 +49,10 @@ class NetVisionPreprocessor:
 
         for file_path in pcap_files:
             base_name = os.path.basename(file_path)
-            parent_dir = os.path.basename(os.path.dirname(file_path))
 
             # 【智能标签提取逻辑】
-            if self.dataset_name == 'ENTA_Datase':
-                # ENTA 数据集：使用父文件夹名称作为标签 (Attacks / Normal Behavior)
-                label_name = parent_dir
-            else:
-                # USTC 和 ToN-IoT：使用去掉后缀的文件名作为标签
-                label_name = os.path.splitext(base_name)[0]
+            # 因为 CIC_IoT_2023, USTC 等数据集 pcap 文件直接在文件夹下，所以直接使用去掉后缀的文件名作为标签
+            label_name = os.path.splitext(base_name)[0]
 
             print(f"\n正在处理: {base_name} (分配标签: {label_name})")
 
@@ -65,39 +63,39 @@ class NetVisionPreprocessor:
             max_packets_per_file = 300000  # 每个文件最多只读取前 30 万个数据包 (可根据需要修改)
 
             try:
-                # PcapReader 像流水线一样逐个吐出数据包，几乎不占用任何运行内存 (RAM)
                 with PcapReader(file_path) as pcap_reader:
                     i = 0
                     while True:
                         # === 核心优化 3：异常与畸形包跳过机制 (抗损毁) ===
                         try:
-                            # 手动逐个读取，遇到畸形包时只报错当前包，不崩溃整个程序
                             pkt = pcap_reader.read_packet()
                         except EOFError:
-                            break  # 正常读取到文件末尾，结束循环
+                            break
                         except Exception:
-                            # 遇到畸形/损坏的 pcapng 数据包，直接跳过！
                             continue
 
-                        # 【提速与防过拟合秘籍】达到上限直接切断循环，防止读取无效的泛洪攻击数据包
                         if i >= max_packets_per_file:
                             print(f"    [!] 达到采样上限 ({max_packets_per_file}包)，触发防过拟合截断，停止读取。")
                             break
 
-                        # 每读取 1 万个包打印一次进度，防止在 Colab 上误以为程序死机
                         if i > 0 and i % 10000 == 0:
                             print(f"    ... 已读取 {i} 个数据包 ...")
 
                         cleaned_data = self.traffic_cleaning(pkt)
                         if not cleaned_data:
-                            i += 1  # 即使是空包也要增加计数，防止死循环
+                            i += 1
                             continue
 
-                        # 提取五元组作为会话的唯一 Key
-                        if pkt.haslayer(IP):
-                            src = pkt[IP].src
-                            dst = pkt[IP].dst
-                            proto = pkt[IP].proto
+                        # === 支持五元组的 IPv4 和 IPv6 混合提取 ===
+                        has_ip4 = pkt.haslayer(IP)
+                        has_ip6 = pkt.haslayer(IPv6)
+
+                        if has_ip4 or has_ip6:
+                            net_layer = pkt[IP] if has_ip4 else pkt[IPv6]
+
+                            src = net_layer.src
+                            dst = net_layer.dst
+                            proto = net_layer.proto
                             sport, dport = 0, 0
 
                             if pkt.haslayer(TCP):
@@ -107,18 +105,15 @@ class NetVisionPreprocessor:
                                 sport = pkt[UDP].sport
                                 dport = pkt[UDP].dport
 
-                            # 排序源和目的端口，保证一来一回的双向流量被划分为同一个 Session
                             end1 = f"{src}:{sport}"
                             end2 = f"{dst}:{dport}"
                             session_key = f"{proto}-" + "-".join(sorted([end1, end2]))
 
-                            # 【极速截断优化】如果该会话已经收集满 784 字节，就不再浪费内存继续拼接了！
                             if len(sessions[session_key]) < self.truncate_len:
                                 sessions[session_key] += cleaned_data
 
-                        i += 1  # 成功处理完一个包，计数器加 1
+                        i += 1
 
-                # 将收集好的所有会话转换为二维灰度图像
                 print(f"    [+] {base_name} 读取完毕！共提取 {len(sessions)} 个有效会话，正在转换为图像矩阵...")
                 for sess_key, session_bytes in sessions.items():
                     if len(session_bytes) == 0:
@@ -141,7 +136,6 @@ class NetVisionPreprocessor:
 
         print(f"\n正在按 8:2 的比例划分 {self.dataset_name} 训练集和测试集...")
 
-        # 过滤掉样本数少于 2 的极其稀有的会话类别（防止 train_test_split 报错）
         unique_labels, counts = np.unique(labels, return_counts=True)
         valid_labels = unique_labels[counts >= 2]
         dropped_labels = unique_labels[counts < 2]
@@ -169,8 +163,9 @@ class NetVisionPreprocessor:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NetVision PCAP Preprocessing (Streaming & Optimized)")
+    # 将 ENTA_Datase 替换为 CIC_IoT_2023
     parser.add_argument('--dataset', type=str, default='USTC_TFC2016',
-                        choices=['USTC_TFC2016', 'ENTA_Datase', 'ToN-IoT', 'all'],
+                        choices=['USTC_TFC2016', 'CIC_IoT_2023', 'ToN-IoT', 'all'],
                         help='选择要处理的数据集名称')
 
     args = parser.parse_args()
@@ -179,8 +174,7 @@ if __name__ == "__main__":
     BASE_PROCESSED_DIR = "data/processed"
     os.makedirs(BASE_PROCESSED_DIR, exist_ok=True)
 
-    # 动态构建需要处理的数据集列表
-    datasets_to_process = ['USTC_TFC2016', 'ENTA_Datase', 'ToN-IoT'] if args.dataset == 'all' else [args.dataset]
+    datasets_to_process = ['USTC_TFC2016', 'CIC_IoT_2023', 'ToN-IoT'] if args.dataset == 'all' else [args.dataset]
 
     for ds_name in datasets_to_process:
         print(f"\n{'=' * 40}")
@@ -192,7 +186,6 @@ if __name__ == "__main__":
             print(f"[!] 错误: 找不到数据集目录 {raw_data_dir}")
             continue
 
-        # 统一规范化保存文件名 (防止包含破折号等符号导致后续读取失败)
         safe_ds_name = ds_name.lower().replace('-', '_')
         output_path = os.path.join(BASE_PROCESSED_DIR, f"{safe_ds_name}_dataset.npz")
 

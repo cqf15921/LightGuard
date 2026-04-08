@@ -20,7 +20,7 @@ def test():
 
     # 核心参数：选择要评估的数据集 (已更新为最新的 PCAP 数据集列表)
     parser.add_argument('--dataset', type=str, default='USTC_TFC2016',
-                        choices=['USTC_TFC2016', 'ENTA_Datase', 'ToN-IoT'],
+                        choices=['USTC_TFC2016', 'CIC_IoT_2023', 'ToN-IoT'],
                         help='选择要评估的数据集')
 
     parser.add_argument('--batch_size', type=int, default=64, help='批次大小')

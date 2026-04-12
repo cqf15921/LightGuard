@@ -38,7 +38,8 @@ def train():
     # 在 Colab 或 Linux 上 num_workers 建议设为 2 或 4 以加速读取
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
 
-    num_classes = len(train_dataset.classes)
+    num_classes = train_dataset.get_num_classes()
+
     print(f"[*] 检测到类别数: {num_classes}, 样本总数: {len(train_dataset)}")
 
     # 3. 初始化模型

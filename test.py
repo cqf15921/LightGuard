@@ -53,10 +53,7 @@ def test():
     # 读取的权重文件名前缀更新为 netvision
     model_path = f'./checkpoints/netvision_{safe_dataset_name}.pth'
 
-    model = NetVision().to(args.device)
-
-    # 动态适配输出层类别数
-    model.f1[2] = nn.Linear(256, num_classes).to(args.device)
+    model = NetVision(num_classes=num_classes).to(args.device)
 
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=args.device))

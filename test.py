@@ -37,7 +37,7 @@ class CustomNPZDataset(Dataset):
         # 增加通道维度 (H, W) -> (H, W, 1)
         image = image[:, :, np.newaxis]
         # 转换为 Tensor，并调整维度为 (C, H, W) 以匹配 PyTorch 卷积层需求
-        image = torch.tensor(image.transpose((2, 0, 1)), dtype=torch.float32)
+        image = torch.tensor(image.transpose((2, 0, 1)), dtype=torch.float32) / 255.0
         label = self.label_to_idx[self.labels_name[idx]]
         return image, torch.tensor(label, dtype=torch.long)
 

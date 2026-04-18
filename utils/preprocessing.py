@@ -1,7 +1,7 @@
 import os
 import glob
 import argparse
-import shutil  # 新增：用于清理临时目录
+import shutil  # 用于清理临时目录
 import numpy as np
 from collections import defaultdict
 from scapy.all import IP, IPv6, TCP, UDP
@@ -162,8 +162,9 @@ class NetVisionPreprocessor:
         train_path = self.output_idx_path.replace('.npz', '_train.npz')
         test_path = self.output_idx_path.replace('.npz', '_test.npz')
 
-        np.savez_compressed(train_path, images=X_train, labels=y_train)
-        np.savez_compressed(test_path, images=X_test, labels=y_test)
+        # ==== 核心 Bug 修复：增加 classes=valid_labels 记录全局类别名单 ====
+        np.savez_compressed(train_path, images=X_train, labels=y_train, classes=valid_labels)
+        np.savez_compressed(test_path, images=X_test, labels=y_test, classes=valid_labels)
 
         print(f"[+] 最终数据集已保存。")
 

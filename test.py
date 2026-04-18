@@ -13,20 +13,28 @@ from thop import profile  # 用于计算 FLOPs 和 参数量
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# 导入你的模型和数据集加载类 (已更新为 NetVision)
+# 导入你的模型和数据集加载类
 from models.netvision_model import NetVision
 from utils.dataset import NetVisionDataset
 
 
 # ==========================================
-# 新增：用于直接加载用户上传的 .npz 文件的自定义 Dataset
+# 修复后：CustomNPZDataset 接收模型强制指定的 classes
 # ==========================================
 class CustomNPZDataset(Dataset):
-    def __init__(self, npz_path):
+    def __init__(self, npz_path, model_classes=None):
         data = np.load(npz_path, allow_pickle=True)
         self.images = data['images']
         self.labels_name = data['labels']
-        self.unique_labels = sorted(list(set(self.labels_name)))
+
+        # 优先使用模型自带的类别名单，保证维度和映射 100% 对齐
+        if model_classes is not None:
+            self.unique_labels = model_classes
+        elif 'classes' in data:
+            self.unique_labels = data['classes'].tolist()
+        else:
+            self.unique_labels = sorted(list(set(self.labels_name)))
+
         self.label_to_idx = {name: i for i, name in enumerate(self.unique_labels)}
 
     def __len__(self):
@@ -38,7 +46,9 @@ class CustomNPZDataset(Dataset):
         image = image[:, :, np.newaxis]
         # 转换为 Tensor，并调整维度为 (C, H, W) 以匹配 PyTorch 卷积层需求
         image = torch.tensor(image.transpose((2, 0, 1)), dtype=torch.float32) / 255.0
-        label = self.label_to_idx[self.labels_name[idx]]
+
+        # 处理异常：如果测试集里出现了模型从未见过的流量类别，默认标记为 0 (或防崩溃机制)
+        label = self.label_to_idx.get(self.labels_name[idx], 0)
         return image, torch.tensor(label, dtype=torch.long)
 
     def get_num_classes(self):
@@ -66,52 +76,75 @@ def test():
     args = parser.parse_args()
 
     # ==========================================
-    # 2. 动态加载测试集与权重路径
+    # 2. 动态确定模型路径并提取类别名单
     # ==========================================
     if args.custom_test_path and args.custom_model_path:
         print(f"=== 开始执行自定义模型与数据评估 ===")
-        try:
-            # 使用针对单一文件编写的数据加载器
-            test_dataset = CustomNPZDataset(args.custom_test_path)
-            model_path = args.custom_model_path
-        except Exception as e:
-            print(f"[!] 加载自定义测试集失败: {e}")
-            return
+        model_path = args.custom_model_path
+        eval_target_name = "自定义测试集"
     else:
         print(f"=== 开始在 {args.dataset} 上评估 NetVision ===")
-        processed_dir = "data/processed"
-        try:
-            test_dataset = NetVisionDataset(data_dir=processed_dir, dataset_name=args.dataset, is_train=False)
-        except FileNotFoundError as e:
-            print(f"[!] 报错: {e}")
-            print("[!] 未找到测试集数据，请先运行 utils/preprocessing.py 生成对应的 .npz 文件！")
-            return
-
-        # 统一规范化名字，与 train.py 的保存逻辑保持一致
         safe_dataset_name = args.dataset.lower().replace('-', '_')
         model_path = f'./checkpoints/netvision_{safe_dataset_name}.pth'
+        eval_target_name = args.dataset
 
-    num_classes = test_dataset.get_num_classes()
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
-
-    # ==========================================
-    # 3. 动态加载模型与权重
-    # ==========================================
-    model = NetVision(num_classes=num_classes).to(args.device)
-
-    if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=args.device))
-        print(f"[*] 成功加载模型权重: {model_path}")
-    else:
+    if not os.path.exists(model_path):
         print(f"[!] 未找到模型权重文件: {model_path}")
         if not args.custom_model_path:
             print(f"[!] 请先执行: python train.py --dataset {args.dataset} 进行训练！")
         return
 
+    # 加载权重，兼容只有 state_dict 的老版本和带有 classes 的新版本
+    checkpoint = torch.load(model_path, map_location=args.device)
+    if isinstance(checkpoint, dict) and 'classes' in checkpoint:
+        state_dict = checkpoint['state_dict']
+        model_classes = checkpoint['classes']
+    else:
+        state_dict = checkpoint
+        model_classes = None  # 如果加载的是老模型，无法获取固定的分类名
+
+    # ==========================================
+    # 3. 动态加载测试集 (注入模型指定的 classes)
+    # ==========================================
+    if args.custom_test_path and args.custom_model_path:
+        try:
+            test_dataset = CustomNPZDataset(args.custom_test_path, model_classes=model_classes)
+        except Exception as e:
+            print(f"[!] 加载自定义测试集失败: {e}")
+            return
+    else:
+        processed_dir = "data/processed"
+        try:
+            test_dataset = NetVisionDataset(data_dir=processed_dir, dataset_name=args.dataset, is_train=False)
+            # 内置模式下，强制对齐模型内存储的分类名单
+            if model_classes is not None:
+                test_dataset.unique_labels = model_classes
+                test_dataset.label_to_idx = {name: i for i, name in enumerate(model_classes)}
+                test_dataset.idx_to_label = {i: name for name, i in test_dataset.label_to_idx.items()}
+        except FileNotFoundError as e:
+            print(f"[!] 报错: {e}")
+            print("[!] 未找到测试集数据，请先运行 utils/preprocessing.py 生成对应的 .npz 文件！")
+            return
+
+    num_classes = test_dataset.get_num_classes()
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+
+    # ==========================================
+    # 4. 初始化并注入模型
+    # ==========================================
+    model = NetVision(num_classes=num_classes).to(args.device)
+
+    try:
+        model.load_state_dict(state_dict)
+        print(f"[*] 成功加载模型权重: {model_path}")
+    except RuntimeError as e:
+        print(f"\n[!] 模型结构崩溃！当前测试集包含 {num_classes} 个分类，但上传的权重架构与之不匹配。\n详细错误: {e}")
+        return
+
     model.eval()
 
     # =====================================================================
-    # 4. 计算模型的学术指标：FLOPs (计算复杂度) 和 Parameters (参数量)
+    # 5. 计算模型的学术指标：FLOPs (计算复杂度) 和 Parameters (参数量)
     # =====================================================================
     # 构造假输入：(BatchSize, Channels, Height, Width) -> 对应 784 字节的 28x28 灰度图
     dummy_input = torch.randn(1, 1, 28, 28).to(args.device)
@@ -126,12 +159,11 @@ def test():
         print(f"\n[!] 计算 FLOPs 失败: {e}\n")
 
     # =====================================================================
-    # 5. 推理速度测试与性能评估
+    # 6. 推理速度测试与性能评估
     # =====================================================================
     all_preds = []
     all_labels = []
 
-    eval_target_name = "自定义测试集" if args.custom_test_path else args.dataset
     print(f"[*] 开始在 {eval_target_name} 上执行推理...")
     start_time = time.time()
 
@@ -148,7 +180,7 @@ def test():
     total_time = end_time - start_time
     flows_per_second = len(test_dataset) / total_time if total_time > 0 else 0
 
-    # 6. 计算各项评估指标并打印报告
+    # 计算各项评估指标
     accuracy = accuracy_score(all_labels, all_preds) * 100
     precision = precision_score(all_labels, all_preds, average='macro', zero_division=0) * 100
     recall = recall_score(all_labels, all_preds, average='macro', zero_division=0) * 100

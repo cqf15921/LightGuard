@@ -114,7 +114,8 @@ class NetVisionPreprocessor:
 
                 # --- 改进：原子化写入逻辑 ---
                 if len(images) > 0:
-                    tmp_path = temp_file_path + ".tmp"
+                    # 【修复】让临时文件也以 .npz 结尾，防止 NumPy 自动追加后缀
+                    tmp_path = temp_file_path.replace('.npz', '_tmp.npz')
                     np.savez_compressed(tmp_path, images=np.array(images), labels=np.array(labels))
                     os.rename(tmp_path, temp_file_path)  # 只有写完重命名才算成功
                     print(f"    [成功] 数据已保存至缓存。")
@@ -163,11 +164,11 @@ class NetVisionPreprocessor:
                 X_train, X_test, y_train, y_test = np.array(images), np.array(images), np.array(labels), np.array(labels)
             else:
                 X_train, X_test, y_train, y_test = train_test_split(
-                    images, labels, test_size=0.2, random_state=42
+                    images, labels, test_size=0.1, random_state=42
                 )
         else:
             X_train, X_test, y_train, y_test = train_test_split(
-                images, labels, test_size=0.2, random_state=42, stratify=labels
+                images, labels, test_size=0.1, random_state=42, stratify=labels
             )
 
         train_path = self.output_idx_path.replace('.npz', '_train.npz')

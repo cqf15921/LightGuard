@@ -1,2 +1,0 @@
-Dataset,Model,Accuracy(%),Precision(%),Recall(%),F1-Score(%),FLOPs(M),Params(K),Inference_Time(s),Flows_per_second
-CIC_IoT_2023,1dcnn,6.16,9.05,9.40,3.03,3.65,71.63,0.77,18024.40

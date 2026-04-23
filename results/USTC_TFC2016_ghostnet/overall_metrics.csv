@@ -1,0 +1,2 @@
+Dataset,Model,Accuracy(%),Precision(%),Recall(%),F1-Score(%),FLOPs(M),Params(K),Inference_Time(s),Flows_per_second
+USTC_TFC2016,ghostnet,3.69,3.85,4.27,3.23,0.68,53.89,2.21,8290.23

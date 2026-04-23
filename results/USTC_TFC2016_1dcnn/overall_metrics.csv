@@ -1,0 +1,2 @@
+Dataset,Model,Accuracy(%),Precision(%),Recall(%),F1-Score(%),FLOPs(M),Params(K),Inference_Time(s),Flows_per_second
+USTC_TFC2016,1dcnn,4.90,3.38,5.36,1.03,3.66,73.68,1.03,17801.18

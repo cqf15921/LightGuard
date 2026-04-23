@@ -8,6 +8,7 @@ import os
 import argparse
 import numpy as np
 from thop import profile  # 用于计算 FLOPs 和 参数量
+import csv  # [新增] 用于导出 CSV 文件
 
 # 引入可视化绘图库
 import matplotlib.pyplot as plt
@@ -19,7 +20,7 @@ from utils.dataset import NetVisionDataset
 
 
 # ==========================================
-# 修复后：CustomNPZDataset 接收模型强制指定的 classes
+# CustomNPZDataset 接收模型强制指定的 classes
 # ==========================================
 class CustomNPZDataset(Dataset):
     def __init__(self, npz_path, model_classes=None):
@@ -157,14 +158,16 @@ def test():
     # =====================================================================
     # 5. 计算模型的学术指标：FLOPs (计算复杂度) 和 Parameters (参数量)
     # =====================================================================
-    # 构造假输入：(BatchSize, Channels, Height, Width) -> 对应 784 字节的 28x28 灰度图
     dummy_input = torch.randn(1, 1, 28, 28).to(args.device)
+    flops_val, params_val = "N/A", "N/A"  # [新增] 为CSV保留变量
     try:
         flops, params = profile(model, inputs=(dummy_input,), verbose=False)
+        flops_val = f"{flops / 1e6:.2f}"
+        params_val = f"{params / 1e3:.2f}"
         print("\n" + "=" * 40)
         print("【模型复杂度评估】")
-        print(f"计算复杂度 (FLOPs): {flops / 1e6:.2f} M")
-        print(f"模型参数量 (Params): {params / 1e3:.2f} K")
+        print(f"计算复杂度 (FLOPs): {flops_val} M")
+        print(f"模型参数量 (Params): {params_val} K")
         print("=" * 40 + "\n")
     except Exception as e:
         print(f"\n[!] 计算 FLOPs 失败: {e}\n")
@@ -210,48 +213,81 @@ def test():
     print(f"F1-measure:         {f1:.2f}%")
     print("-" * 40)
 
-    # 打印详细分类报告 (防止 numpy 标签报错，统一转换为字符串)
     target_names = [str(x) for x in test_dataset.unique_labels]
     print("\n详细分类报告:")
     print(classification_report(all_labels, all_preds, target_names=target_names, zero_division=0))
 
     # =====================================================================
-    # 7. 生成各项指标的可视化图表并保存
+    # 7. 生成各项指标的可视化图表、专属文件夹及保存 CSV [主要修改部分]
     # =====================================================================
-    print("[*] 正在生成可视化图表...")
+    print("[*] 正在生成评估结果和可视化图表...")
+
+    # 基础 UI 目录
     os.makedirs('results', exist_ok=True)
+
+    # [新增] 按照 数据集+模型名称 创建专属输出文件夹
+    specific_dir_name = f"{eval_target_name}_{args.model_type}".replace(' ', '_')
+    specific_res_dir = os.path.join('results', specific_dir_name)
+    os.makedirs(specific_res_dir, exist_ok=True)
 
     # (1) 性能指标柱状图
     plt.figure(figsize=(8, 6))
     metrics_names = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
     metrics_values = [accuracy, precision, recall, f1]
 
-    # 确保 seaborn 正常绘制柱状图
     sns.barplot(x=metrics_names, y=metrics_values, palette="viridis")
-    plt.title(f'{eval_target_name} Performance Metrics (%)')
+    plt.title(f'{eval_target_name} ({args.model_type}) Performance Metrics (%)')
     plt.ylim(0, 100)
 
-    # 在柱子上添加具体的数值标签
     for i, v in enumerate(metrics_values):
         plt.text(i, v + 1.5, f"{v:.2f}%", color='black', ha='center', fontweight='bold')
 
     plt.tight_layout()
+    # 为保证 UI 正常显示保留旧版输出
     plt.savefig('results/metrics_bar.png', dpi=300)
+    # [新增] 保存到专属文件夹
+    plt.savefig(os.path.join(specific_res_dir, 'metrics_bar.png'), dpi=300)
     plt.close()
 
     # (2) 混淆矩阵热力图
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(10, 8))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=target_names, yticklabels=target_names)
-    plt.title(f'Confusion Matrix on {eval_target_name}')
+    plt.title(f'Confusion Matrix on {eval_target_name} ({args.model_type})')
     plt.ylabel('True Label')
     plt.xlabel('Predicted Label')
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     plt.savefig('results/confusion_matrix.png', dpi=300)
+    plt.savefig(os.path.join(specific_res_dir, 'confusion_matrix.png'), dpi=300)  # [新增] 保存到专属文件夹
     plt.close()
 
-    print("[*] 可视化图表已生成，并保存至 results/ 目录！")
+    # (3) [新增] 导出评估指标至 CSV 文件
+    csv_metrics_path = os.path.join(specific_res_dir, 'overall_metrics.csv')
+    with open(csv_metrics_path, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Dataset', 'Model', 'Accuracy(%)', 'Precision(%)', 'Recall(%)', 'F1-Score(%)',
+                         'FLOPs(M)', 'Params(K)', 'Inference_Time(s)', 'Flows_per_second'])
+        writer.writerow([eval_target_name, args.model_type, f"{accuracy:.2f}", f"{precision:.2f}",
+                         f"{recall:.2f}", f"{f1:.2f}", flops_val, params_val, f"{total_time:.2f}",
+                         f"{flows_per_second:.2f}"])
+
+    # (4) [新增] 导出详细分类报告至 CSV 文件
+    report_dict = classification_report(all_labels, all_preds, target_names=target_names, zero_division=0,
+                                        output_dict=True)
+    csv_report_path = os.path.join(specific_res_dir, 'classification_report.csv')
+    with open(csv_report_path, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Class', 'Precision', 'Recall', 'F1-Score', 'Support'])
+        for cls_name, metrics in report_dict.items():
+            if isinstance(metrics, dict):
+                writer.writerow([cls_name, f"{metrics['precision']:.4f}", f"{metrics['recall']:.4f}",
+                                 f"{metrics['f1-score']:.4f}", metrics['support']])
+            else:
+                writer.writerow([cls_name, "", "", f"{metrics:.4f}", ""])  # 兼容 accuracy 单值
+
+    print(f"[*] 图表已存至专属目录: {specific_res_dir}")
+    print(f"[*] 各项评估指标和详细分类报告已成功导出为 CSV: {specific_res_dir} 目录！")
 
 
 if __name__ == "__main__":

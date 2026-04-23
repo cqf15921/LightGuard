@@ -1,0 +1,15 @@
+Class,Precision,Recall,F1-Score,Support
+BenignTraffic,0.0340,0.0334,0.0337,1409.0
+DDoS-HTTP_Flood,0.1256,0.1192,0.1223,671.0
+DDoS-SlowLoris,0.0869,0.2889,0.1336,886.0
+DNS_Spoofing,0.0117,0.0224,0.0154,491.0
+DictionaryBruteForce,0.1250,0.0049,0.0094,409.0
+DoS-HTTP_Flood,0.0590,0.0270,0.0370,704.0
+MITM-ArpSpoofing,0.0000,0.0000,0.0000,94.0
+Recon-HostDiscovery,0.2342,0.1250,0.1630,4433.0
+Recon-OSScan,0.0831,0.0169,0.0281,1713.0
+SqlInjection,0.0780,0.0474,0.0590,485.0
+VulnerabilityScan,0.2929,0.5017,0.3699,2597.0
+accuracy,,,0.1673,
+macro avg,0.1028,0.1079,0.0883,13892.0
+weighted avg,0.1646,0.1673,0.1472,13892.0
